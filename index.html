@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sediment</title>
+<style>
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  color: rgba(255,255,255,0.9);
+}
+canvas { width: 100vw; height: 100vh; display: block; }
+video { display: none; }
+
+#ui {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  pointer-events: none;
+}
+.panel {
+  pointer-events: auto;
+  background: rgba(0,0,0,0.6);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.panel label {
+  font-size: 12px;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  white-space: nowrap;
+}
+.panel input[type="range"] { width: 160px; }
+button {
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: white;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<video id="v" autoplay playsinline muted></video>
+
+<div id="ui">
+  <div class="panel">
+    <button id="startBtn">Start camera</button>
+    <button id="clearBtn">Clear</button>
+    <button id="pngBtn">Save PNG</button>
+  </div>
+
+  <div class="panel">
+    <button id="recBtn" disabled>Start recording</button>
+    <button id="stopBtn" disabled>Stop</button>
+  </div>
+
+  <div class="panel">
+    <label>Scan speed
+      <input id="scanSpeed" type="range" min="0.05" max="4" value="0.30" step="0.05">
+    </label>
+    <label>Decay
+      <input id="decay" type="range" min="0" max="25" value="3">
+    </label>
+    <label>Density
+      <input id="density" type="range" min="10" max="900" value="160">
+    </label>
+    <label>Sampling
+      <input id="sampleRes" type="range" min="160" max="520" value="320" step="10">
+    </label>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+const video = document.getElementById('v');
+
+const startBtn = document.getElementById('startBtn');
+const clearBtn = document.getElementById('clearBtn');
+const pngBtn = document.getElementById('pngBtn');
+const recBtn = document.getElementById('recBtn');
+const stopBtn = document.getElementById('stopBtn');
+
+const scanSpeedEl = document.getElementById('scanSpeed');
+const decayEl = document.getElementById('decay');
+const densityEl = document.getElementById('density');
+const sampleResEl = document.getElementById('sampleRes');
+
+let w, h;
+
+function resize(){
+  w = window.innerWidth;
+  h = window.innerHeight;
+  canvas.width = w;
+  canvas.height = h;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0,0,w,h);
+}
+window.addEventListener("resize", resize);
+resize();
+
+const sampleCanvas = document.createElement('canvas');
+const sctx = sampleCanvas.getContext('2d', { willReadFrequently:true });
+
+function ensureSampleCanvas(){
+  const target = Number(sampleResEl.value);
+  const vw = video.videoWidth || 1280;
+  const vh = video.videoHeight || 720;
+  const aspect = vw / vh;
+  sampleCanvas.width = Math.max(80, Math.floor(target * aspect));
+  sampleCanvas.height = Math.max(60, Math.floor(target));
+}
+
+let scanY = 0;
+
+function luminance(r,g,b){
+  return (0.2126*r + 0.7152*g + 0.0722*b) / 255;
+}
+
+// Recording (WebM, highest supported codec)
+let recorder, recordedChunks=[], recording=false;
+
+function pickMime(){
+  const types = [
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm'
+  ];
+  for(const t of types){
+    if(window.MediaRecorder && MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';
+}
+
+function startRecording(){
+  const stream = canvas.captureStream(30);
+  const mime = pickMime();
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 12000000 } : undefined);
+  recordedChunks = [];
+
+  recorder.ondataavailable = e => {
+    if(e.data.size > 0) recordedChunks.push(e.data);
+  };
+
+  recorder.onstop = () => {
+    const blob = new Blob(recordedChunks, { type: recorder.mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sediment_${Date.now()}.webm`;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),2000);
+  };
+
+  recorder.start();
+  recording = true;
+  recBtn.disabled = true;
+  stopBtn.disabled = false;
+}
+
+function stopRecording(){
+  recorder.stop();
+  recording = false;
+  recBtn.disabled = false;
+  stopBtn.disabled = true;
+}
+
+recBtn.onclick = startRecording;
+stopBtn.onclick = stopRecording;
+
+async function startCamera(){
+  const stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+  video.srcObject = stream;
+  await video.play();
+  ensureSampleCanvas();
+  startBtn.disabled = true;
+  recBtn.disabled = false;
+  requestAnimationFrame(loop);
+}
+
+startBtn.onclick = startCamera;
+
+clearBtn.onclick = ()=>{
+  ctx.fillStyle="#000";
+  ctx.fillRect(0,0,w,h);
+};
+
+pngBtn.onclick = ()=>{
+  const a=document.createElement('a');
+  a.download=`sediment_${Date.now()}.png`;
+  a.href=canvas.toDataURL('image/png');
+  a.click();
+};
+
+function loop(){
+
+  const decay = Number(decayEl.value);
+  if(decay>0){
+    ctx.fillStyle=`rgba(0,0,0,${decay/1200})`;
+    ctx.fillRect(0,0,w,h);
+  }
+
+  sctx.drawImage(video,0,0,sampleCanvas.width,sampleCanvas.height);
+  const img=sctx.getImageData(0,0,sampleCanvas.width,sampleCanvas.height);
+  const data=img.data;
+
+  scanY=(scanY+Number(scanSpeedEl.value))%sampleCanvas.height;
+
+  const yInt=Math.floor(scanY);
+  const forward=(yInt%2)===0;
+  const marks=Number(densityEl.value);
+
+  const sx=w/sampleCanvas.width;
+  const sy=h/sampleCanvas.height;
+
+  for(let i=0;i<marks;i++){
+    let px=Math.floor(Math.random()*sampleCanvas.width);
+    if(!forward) px=(sampleCanvas.width-1)-px;
+
+    const py=yInt;
+    const idx=(py*sampleCanvas.width+px)*4;
+
+    const l=luminance(data[idx],data[idx+1],data[idx+2]);
+    const br=(l*255)|0;
+
+    ctx.strokeStyle=`rgb(${br},${br},${br})`;
+    ctx.lineWidth=0.4+2*l;
+
+    const x=px*sx;
+    const y=py*sy;
+
+    ctx.beginPath();
+    ctx.moveTo(x-4*sx,y);
+    ctx.lineTo(x+4*sx,y);
+    ctx.stroke();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+// Single-key UI toggle: press 'H' to hide/show controls (useful for projection)
+let uiVisible = true;
+window.addEventListener('keydown', (ev) => {
+  if (ev.key === 'h' || ev.key === 'H') {
+    uiVisible = !uiVisible;
+    const ui = document.getElementById('ui');
+    if (ui) ui.style.display = uiVisible ? 'flex' : 'none';
+  }
+});
+
+</script>
+</body>
+</html>
